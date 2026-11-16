@@ -5,7 +5,7 @@
 ## 当前验证状态
 
 - 2026-11-16，Windows / MinGW GCC 15.1.0：资源清理模块 15 项测试通过，0 项失败。
-- Linux 整库编译与 SQL 回归：尚未执行。已提供可执行的测试脚本。
+- Linux 整库编译与 SQL 回归：由 [GitHub Actions](https://github.com/Pure927/drop-table-OceanBase/actions/workflows/lab-drop-table.yml) 对每次提交执行，包含 16 项模块测试与真实 observer 测试。以对应提交的运行结果为准。
 - OceanBase 官网提测：尚未提交，无平台通过记录和成绩。
 
 模块通过不等于数据库整库通过，也不等于官网通过。实验报告中的这三类状态分别记录。
@@ -30,12 +30,13 @@
 6. DropTableFiles 先校验全部文件，再将它们改名为同目录 `.drop` 文件；改名失败尝试逆序回退。
 7. 从 opened_tables_ 移除条目，释放 Table 以及记录、缓存池、索引和 LOB 句柄，然后删除 `.drop` 文件。失败返回 IOERR_WRITE。
 8. 兼容旧 DefaultHandler::drop_table 调用入口。
+9. 修复恢复时重复回放检查点边界日志的问题：保留日志处理器看到的最大 LSN，只把检查点之后的日志交给实际回放器，避免访问已删除的索引。
 
 ## 使用边界
 
 针对 Linux、heap 存储、默认无并发训练配置。不得存在其他活动事务或同时访问该表的请求；沿用 MiniOB Db 的外部串行化约束。显式 BEGIN 中拒绝 DROP，LSM 引擎返回 UNSUPPORTED。
 
-该实现不提供崩溃原子的 DDL；文件改名后进程意外退出可能留下 `.drop` 文件。unlink 失败时表已从目录移除，返回失败并保留未清理文件，不能视为事务回滚。上游析构过程中的个别 close 错误不向调用者传播；需要 Linux 测试进一步验证文件句柄生命周期。以上边界不能用模块测试或正常重启测试消除。
+该实现不提供崩溃原子的 DDL；文件改名后进程意外退出可能留下 `.drop` 文件。unlink 失败时表已从目录移除，返回失败并保留未清理文件，不能视为事务回滚。上游析构过程中的个别 close 错误不向调用者传播。以上边界不能用模块测试或正常重启测试消除。
 
 ## 编译与运行
 
@@ -48,8 +49,8 @@ python3 lab_tests/run_unit.py
 python3 lab_tests/run_sql.py --observer build_debug/bin/observer --config etc/observer.ini --output /tmp/miniob-lab
 ```
 
-## 创建个人仓库与提测
+## 个人仓库与提测
 
-请阅读提交包外层的《仓库与官网提测步骤.md》。创建空白 GitHub 或 Gitee 仓库后，将本地仓库推送到个人地址。平台使用的是仓库地址、分支和完整 commit id，不是课程提交 ZIP。
+个人仓库为 https://github.com/Pure927/drop-table-OceanBase ，分支为 `lab-drop-table`。平台使用的是仓库地址、分支和完整 commit id，不是课程提交 ZIP。请阅读提交包外层的《仓库与官网提测步骤.md》。
 
 必须先运行 Linux 测试、修复失败并推送最终提交，再在训练营 200001 题目组提测。保存结果页、任务编号、时间和日志，在报告第 5 页补入真实结果。课程 5 分与训练营子题 10 分是两套评分，不可互换。
