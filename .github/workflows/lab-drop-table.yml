@@ -1,0 +1,52 @@
+name: DROP TABLE Linux verification
+
+on:
+  push:
+    branches: [lab-drop-table]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-sql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/deps/3rd/usr/local/lib:${{ github.workspace }}/deps/3rd/usr/local/lib64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install compiler and parser generators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake flex bison texinfo
+      - name: Cache MiniOB dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: deps/3rd/usr/local
+          key: miniob-lab-ubuntu24-deps-${{ hashFiles('.gitmodules', 'build.sh') }}
+      - name: Build official third-party dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: bash build.sh init
+      - name: Compile MiniOB
+        run: |
+          cmake -S . -B build_debug -DCMAKE_BUILD_TYPE=Debug -DENABLE_ASAN=OFF -DWITH_UNIT_TESTS=OFF -DWITH_CPPLINGS=OFF -DCONCURRENCY=OFF
+          cmake --build build_debug --target observer -j2
+      - name: Test production file cleanup module
+        run: python3 lab_tests/run_unit.py
+      - name: Test real SQL and graceful restart
+        run: python3 lab_tests/run_sql.py --observer build_debug/bin/observer --config etc/observer.ini --output /tmp/miniob-lab
+      - name: Preserve verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drop-table-verification-${{ github.sha }}
+          path: |
+            lab_results/unit-test.log
+            /tmp/miniob-lab/**/sql-test.log
+            /tmp/miniob-lab/**/server-console.log
+            /tmp/miniob-lab/**/observer.log
+          retention-days: 14

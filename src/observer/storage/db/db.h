@@ -74,6 +74,9 @@ public:
    * @brief 根据表名查找表
    */
   Table *find_table(const char *table_name) const;
+
+  /// Drop a heap table in the single-threaded training configuration.
+  RC drop_table(const char *table_name);
   /**
    * @brief 根据表ID查找表
    */

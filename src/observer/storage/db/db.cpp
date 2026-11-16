@@ -22,6 +22,7 @@ See the Mulan PSL v2 for more details. */
 #include "common/os/path.h"
 #include "common/global_context.h"
 #include "storage/common/meta_util.h"
+#include "storage/common/drop_table_files.h"
 #include "storage/table/table.h"
 #include "storage/table/table_meta.h"
 #include "storage/trx/trx.h"
@@ -176,6 +177,55 @@ RC Db::create_table(const char *table_name, span<const AttrInfoSqlNode> attribut
   return RC::SUCCESS;
 }
 
+RC Db::drop_table(const char *table_name)
+{
+  if (table_name == nullptr || common::is_blank(table_name)) {
+    return RC::INVALID_ARGUMENT;
+  }
+  auto it = opened_tables_.find(table_name);
+  if (it == opened_tables_.end()) {
+    return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+  // LSM keys share a database-wide store; deleting files would not remove them.
+  if (get_storage_engine() != StorageEngine::HEAP) {
+    return RC::UNSUPPORTED;
+  }
+  Table *table = it->second;
+  const TableMeta &meta = table->table_meta();
+  std::vector<DropTableFiles::Entry> owned_files;
+  // Hide metadata first so a .table file never points at already removed data.
+  owned_files.push_back({table_meta_file(path_.c_str(), table_name), true});
+  owned_files.push_back({table_data_file(path_.c_str(), table_name), true});
+  owned_files.push_back({table_lob_file(path_.c_str(), table_name), false});
+  owned_files.push_back({table_meta_file(path_.c_str(), table_name) + ".tmp", false});
+  for (int i = 0; i < meta.index_num(); ++i) {
+    owned_files.push_back({table_index_file(path_.c_str(), table_name, meta.index(i)->name()), true});
+  }
+
+  // Advance the checkpoint before removing files referenced by older redo logs.
+  // Like Db::sync(), this assumes no concurrent or outstanding transactions.
+  RC rc = sync();
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
+  DropTableFiles files(std::move(owned_files));
+  std::error_code ec = files.stage();
+  if (ec) {
+    LOG_WARN("failed to stage table files. table=%s, error=%s", table_name, ec.message().c_str());
+    return RC::IOERR_WRITE;
+  }
+  opened_tables_.erase(it);
+  // Release record handlers, buffer pools, index handles and the LOB handle.
+  // Linux permits renaming open files; all handles close before unlinking.
+  delete table;
+  ec = files.commit();
+  if (ec) {
+    LOG_WARN("failed to unlink dropped table files. error=%s", ec.message().c_str());
+    return RC::IOERR_WRITE;
+  }
+  return RC::SUCCESS;
+}
+
 Table *Db::find_table(const char *table_name) const
 {
   unordered_map<string, Table *>::const_iterator iter = opened_tables_.find(table_name);
@@ -260,6 +310,9 @@ RC Db::sync()
   auto dblwr_buffer = static_cast<DiskDoubleWriteBuffer *>(buffer_pool_manager_->get_dblwr_buffer());
   rc                = dblwr_buffer->flush_page();
   LOG_INFO("double write buffer flush pages ret=%s", strrc(rc));
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
 
   /*
   在sync期间，不允许有未完成的事务，也不允许开启新的事物。
