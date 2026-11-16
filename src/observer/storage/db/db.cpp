@@ -28,6 +28,7 @@ See the Mulan PSL v2 for more details. */
 #include "storage/trx/trx.h"
 #include "storage/clog/disk_log_handler.h"
 #include "storage/clog/integrated_log_replayer.h"
+#include "storage/clog/log_entry.h"
 
 using namespace common;
 
@@ -346,7 +347,23 @@ RC Db::recover()
   }
 
   IntegratedLogReplayer log_replayer(*buffer_pool_manager_, unique_ptr<LogReplayer>(trx_log_replayer));
-  RC                    rc = log_handler_->replay(log_replayer, check_point_lsn_ /*start_lsn*/);
+  // LogFileReader includes start_lsn, whereas sync() has persisted that LSN.
+  // Keep it visible to DiskLogHandler (to retain the maximum LSN), but do not
+  // redo it: its table or index may already have been dropped after checkpoint.
+  class AfterCheckpointReplayer : public LogReplayer
+  {
+  public:
+    AfterCheckpointReplayer(LogReplayer &delegate, LSN checkpoint)
+        : delegate_(delegate), checkpoint_(checkpoint) {}
+    RC replay(const LogEntry &entry) override
+    {
+      return entry.lsn() <= checkpoint_ ? RC::SUCCESS : delegate_.replay(entry);
+    }
+  private:
+    LogReplayer &delegate_;
+    LSN checkpoint_;
+  } after_checkpoint(log_replayer, check_point_lsn_);
+  RC rc = log_handler_->replay(after_checkpoint, check_point_lsn_ /*start_lsn*/);
   if (OB_FAIL(rc)) {
     LOG_WARN("failed to replay log. rc=%s", strrc(rc));
     return rc;

@@ -50,5 +50,5 @@ jobs:
             lab_results/unit-test.log
             /tmp/miniob-lab/**/sql-test.log
             /tmp/miniob-lab/**/server-console.log
-            /tmp/miniob-lab/**/observer.log
+            /tmp/miniob-lab/**/observer.log*
           retention-days: 14
